@@ -1,58 +1,78 @@
-name: ✅ RDP + Tailscale (Portable ZIP Version)
+name: ✅ RDP + Tailscale Setup
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-tailscale:
+  secure-rdp:
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
-      - name: 🧱 Create RDP User
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # 1️⃣ Generate Random Credentials
+      # -------------------------------------------------------
+      - name: Create RDP user and print credentials
         shell: pwsh
         run: |
-          Write-Host "👤 Creating RDP user..."
-          $chars = (48..57)+(65..90)+(97..122)+(33..47)
-          $pw = -join (1..14 | ForEach-Object {[char]($chars | Get-Random)})
+          # Generate a reasonably strong random password
+          $chars = (48..57) + (65..90) + (97..122) + (33..47)
+          $pw = -join (1..16 | ForEach-Object { [char]($chars | Get-Random) })
           $username = "rdpuser"
 
           Write-Host "=== RDP CREDENTIALS ==="
           Write-Host "USERNAME: $username"
           Write-Host "PASSWORD: $pw"
           Write-Host "======================="
+          
+          # OPTIONAL: create the user on the Windows runner (uncomment if you want this to run)
+          # Be careful: creating users on GitHub-hosted runners is ephemeral and may not persist.
+          # net user $username $pw /add
+          # net localgroup "Remote Desktop Users" $username /add
 
-          $securePw = ConvertTo-SecureString $pw -AsPlainText -Force
-          try { net user $username $pw /add } catch { net user $username $pw }
-          net localgroup "Remote Desktop Users" $username /add
-          reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+          # NOTE: If you actually deploy to a persistent VM, replace the above commands
+          # with remote execution (e.g., using SSH or az/azure/login) to create the account there.
+
+      # -------------------------------------------------------
+      # 2️⃣ Enable RDP & Firewall Rules
+      # -------------------------------------------------------
+      - name: Enable Remote Desktop
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Write-Host "✅ RDP access enabled successfully!"
 
-      - name: 🌐 Connect to Tailscale (Portable ZIP)
+      # -------------------------------------------------------
+      # 3️⃣ Install and Connect Tailscale
+      # -------------------------------------------------------
+      - name: Install and Connect to Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          Write-Host "📦 Downloading portable Tailscale ZIP..."
-          $url = "https://pkgs.tailscale.com/stable/tailscale-windows-amd64.zip"
-          $zipPath = "$env:TEMP\tailscale.zip"
-          $extractPath = "$env:TEMP\tailscale"
-          Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
-
-          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-          $tailscaleExe = Get-ChildItem -Path $extractPath -Filter "tailscale.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.FullName }
-
-          if (-Not (Test-Path $tailscaleExe)) {
-            throw "❌ tailscale.exe not found after extraction!"
-          }
+          Write-Host "📦 Installing Tailscale..."
+          msiexec /i https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi /qn
 
           Write-Host "🔗 Connecting to Tailscale..."
-          & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-dns=false --accept-routes=true
+          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes" -NoNewWindow -Wait
 
-          Write-Host "🌐 Connection Status:"
-          & $tailscaleExe status
+          Write-Host "🌐 Checking Tailscale status..."
+          & "C:\Program Files\Tailscale\tailscale.exe" status
 
-      - name: ✅ Done
+      # -------------------------------------------------------
+      # 4️⃣ Show Access Info
+      # -------------------------------------------------------
+      - name: Show connection details
+        shell: pwsh
         run: |
-          Write-Host "✅ Setup complete!"
-          Write-Host "RDP credentials printed above."
-          Write-Host "Tailscale device 'GitHubRDP' should now appear online."
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          Write-Host "=============================="
+          Write-Host "🎯 Connect via RDP at: $ip"
+          Write-Host "👤 Username: $env:USERNAME"
+          Write-Host "🔑 Password: $env:PASSWORD"
+          Write-Host "=============================="
+          Write-Host "⚠️ Tip: Use Tailscale IP above in your RDP client."
