@@ -1,4 +1,4 @@
-name: ✅ RDP + Tailscale Setup
+name: ✅ RDP + Tailscale Setup (v2 Fixed)
 
 on:
   workflow_dispatch:
@@ -13,12 +13,12 @@ jobs:
         uses: actions/checkout@v4
 
       # -------------------------------------------------------
-      # 1️⃣ Generate Random Credentials
+      # 1️⃣ Generate Random Credentials & Create User
       # -------------------------------------------------------
       - name: Create RDP user and print credentials
         shell: pwsh
         run: |
-          # Generate a strong random password
+          # Generate strong random password (16 chars)
           $chars = (48..57) + (65..90) + (97..122) + (33..47)
           $pw = -join (1..16 | ForEach-Object { [char]($chars | Get-Random) })
           $username = "rdpuser"
@@ -28,23 +28,42 @@ jobs:
           Write-Host "PASSWORD: $pw"
           Write-Host "======================="
 
-          # Create user (optional)
-          net user $username $pw /add
-          net localgroup "Remote Desktop Users" $username /add
-
-          # Save for later steps
+          # Save credentials for later steps
           echo "USERNAME=$username" >> $env:GITHUB_ENV
           echo "PASSWORD=$pw" >> $env:GITHUB_ENV
 
+          # Create user safely (non-interactive)
+          try {
+            if (Get-Command New-LocalUser -ErrorAction SilentlyContinue) {
+              $securePw = ConvertTo-SecureString $pw -AsPlainText -Force
+              if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
+                Write-Host "User exists, resetting password..."
+                Set-LocalUser -Name $username -Password $securePw
+              } else {
+                New-LocalUser -Name $username -Password $securePw -FullName "RDP User" -Description "Created by GitHub Actions" -PasswordNeverExpires:$true
+              }
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction Stop
+              Write-Host "✅ Local user created via PowerShell (New-LocalUser)."
+            } else {
+              throw "New-LocalUser unavailable"
+            }
+          } catch {
+            Write-Host "⚠️ New-LocalUser failed: $($_.Exception.Message)"
+            Write-Host "Fallback to net user (auto-confirm legacy prompt)"
+            cmd /c "echo Y | net user $username $pw /add"
+            cmd /c "net localgroup \"Remote Desktop Users\" $username /add"
+            Write-Host "✅ Fallback user creation done."
+          }
+
       # -------------------------------------------------------
-      # 2️⃣ Enable RDP & Firewall Rules
+      # 2️⃣ Enable RDP + Firewall Rules
       # -------------------------------------------------------
       - name: Enable Remote Desktop
         shell: pwsh
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Write-Host "✅ RDP access enabled successfully!"
+          Write-Host "✅ Remote Desktop enabled & firewall rule set."
 
       # -------------------------------------------------------
       # 3️⃣ Install and Connect Tailscale
@@ -58,7 +77,9 @@ jobs:
           msiexec /i https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi /qn
 
           Write-Host "🔗 Connecting to Tailscale..."
-          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes" -NoNewWindow -Wait
+          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" `
+                        -ArgumentList "up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes" `
+                        -NoNewWindow -Wait
 
           Write-Host "🌐 Checking Tailscale status..."
           & "C:\Program Files\Tailscale\tailscale.exe" status
@@ -75,4 +96,4 @@ jobs:
           Write-Host "👤 Username: $env:USERNAME"
           Write-Host "🔑 Password: $env:PASSWORD"
           Write-Host "=============================="
-          Write-Host "⚠️ Tip: Use Tailscale IP above in your RDP client."
+          Write-Host "⚠️ Use the Tailscale IP above in your RDP client."
