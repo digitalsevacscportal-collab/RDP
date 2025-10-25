@@ -1,4 +1,4 @@
-name: ✅ RDP + Tailscale (Portable Client, Safe Version)
+name: ✅ RDP + Tailscale (Portable ZIP Version)
 
 on:
   workflow_dispatch:
@@ -27,33 +27,32 @@ jobs:
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-      - name: 🌐 Connect to Tailscale (Portable Mode)
+      - name: 🌐 Connect to Tailscale (Portable ZIP)
         shell: pwsh
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          Write-Host "📦 Downloading portable Tailscale client..."
-          $url = "https://pkgs.tailscale.com/stable/tailscale-ipn-setup.exe"
-          $tailscale = "$env:TEMP\tailscale.exe"
-          Invoke-WebRequest -Uri $url -OutFile $tailscale -UseBasicParsing
+          Write-Host "📦 Downloading portable Tailscale ZIP..."
+          $url = "https://pkgs.tailscale.com/stable/tailscale-windows-amd64.zip"
+          $zipPath = "$env:TEMP\tailscale.zip"
+          $extractPath = "$env:TEMP\tailscale"
+          Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
 
-          if (-Not (Test-Path $tailscale)) {
-            throw "❌ Download failed!"
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          $tailscaleExe = Get-ChildItem -Path $extractPath -Filter "tailscale.exe" -Recurse | Select-Object -First 1 | ForEach-Object { $_.FullName }
+
+          if (-Not (Test-Path $tailscaleExe)) {
+            throw "❌ tailscale.exe not found after extraction!"
           }
 
-          Write-Host "🔗 Starting Tailscale (user mode)..."
-          & $tailscale /quiet /norestart
+          Write-Host "🔗 Connecting to Tailscale..."
+          & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-dns=false --accept-routes=true
 
-          Start-Sleep -Seconds 5
-
-          Write-Host "🔑 Logging into Tailscale..."
-          & $tailscale up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-dns=false --accept-routes=true
-
-          Write-Host "🌐 Tailscale status:"
-          & $tailscale status
+          Write-Host "🌐 Connection Status:"
+          & $tailscaleExe status
 
       - name: ✅ Done
         run: |
-          Write-Host "✅ All set!"
-          Write-Host "Use Tailscale admin panel to get this runner's IP."
-          Write-Host "RDP credentials shown above ⬆️"
+          Write-Host "✅ Setup complete!"
+          Write-Host "RDP credentials printed above."
+          Write-Host "Tailscale device 'GitHubRDP' should now appear online."
