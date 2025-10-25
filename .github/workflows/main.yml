@@ -39,7 +39,7 @@ jobs:
           $env:Path += ";C:\Program Files\Tailscale\"
           Write-Host "Tailscale installed successfully."
 
-            - name: Connect to Tailscale Network
+      - name: Connect to Tailscale Network
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
@@ -49,7 +49,6 @@ jobs:
             --hostname "github-rdp" `
             --accept-routes
           Write-Host "Connected to Tailscale network successfully."
-
 
       - name: Show Tailscale IP
         run: |
