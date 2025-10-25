@@ -33,15 +33,29 @@ jobs:
 
       - name: Install Tailscale
         run: |
+          Write-Host "Downloading and installing Tailscale..."
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "$env:TEMP\tailscale-setup.exe"
           Start-Process "$env:TEMP\tailscale-setup.exe" -ArgumentList "/quiet" -Wait
+          $env:Path += ";C:\Program Files\Tailscale\"
+          Write-Host "Tailscale installed successfully."
 
       - name: Connect to Tailscale Network
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          tailscale up --authkey $env:TAILSCALE_AUTH_KEY --hostname "github-rdp" --accept-routes --ssh
+          Write-Host "Connecting to Tailscale network..."
+          & "C:\Program Files\Tailscale\tailscale.exe" up `
+            --authkey $env:TAILSCALE_AUTH_KEY `
+            --hostname "github-rdp" `
+            --accept-routes --ssh
+          Write-Host "Connected to Tailscale network successfully."
 
       - name: Show Tailscale IP
         run: |
-          tailscale ip -4
+          Write-Host "Fetching Tailscale IP..."
+          & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+
+      - name: Complete job
+        run: |
+          Write-Host "✅ RDP + Tailscale setup completed successfully."
+          Write-Host "You can now connect to this machine via Tailscale RDP."
