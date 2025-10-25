@@ -1,4 +1,4 @@
-name: ✅ RDP + Tailscale (Portable Fix)
+name: ✅ RDP + Tailscale Portable (GitHub Runner Safe)
 
 on:
   workflow_dispatch:
@@ -8,48 +8,52 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: 🧱 Setup RDP User
+      - name: 🧱 Create RDP user
         shell: pwsh
         run: |
           Write-Host "👤 Creating RDP user..."
           $chars = (48..57)+(65..90)+(97..122)+(33..47)
-          $pw = -join (1..14 | ForEach-Object {[char]($chars | Get-Random)})  # <= Max 14 chars to avoid NTLM issue
+          $pw = -join (1..14 | ForEach-Object {[char]($chars | Get-Random)}) # max 14 chars
           $username = "rdpuser"
+
           Write-Host "=== RDP CREDENTIALS ==="
           Write-Host "USERNAME: $username"
           Write-Host "PASSWORD: $pw"
           Write-Host "======================="
+
           $securePw = ConvertTo-SecureString $pw -AsPlainText -Force
           try {
             net user $username $pw /add
           } catch {
-            Write-Host "User already exists, updating password..."
+            Write-Host "User may exist — resetting password..."
             net user $username $pw
           }
           net localgroup "Remote Desktop Users" $username /add
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-      - name: 🌐 Download and Connect to Tailscale (Portable)
+      - name: 🌐 Connect to Tailscale (Portable)
         shell: pwsh
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          Write-Host "📦 Downloading Tailscale Portable..."
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup.exe" -OutFile "$env:TEMP\tailscale.exe" -UseBasicParsing
+          Write-Host "📦 Downloading portable Tailscale..."
+          $url = "https://pkgs.tailscale.com/stable/tailscale-ipn-setup.exe"
+          $zipPath = "$env:TEMP\tailscale-portable.exe"
+          Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+          
+          Write-Host "🔗 Starting Tailscale daemon..."
+          Start-Process -FilePath $zipPath -ArgumentList "service" -NoNewWindow
+          Start-Sleep -Seconds 5
 
-          $tailscaleExe = "$env:TEMP\tailscale.exe"
-          if (-Not (Test-Path $tailscaleExe)) {
-            throw "❌ Failed to download Tailscale portable client!"
-          }
+          Write-Host "🔑 Authenticating..."
+          & $zipPath up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes --accept-dns=false
 
-          Write-Host "🔗 Connecting to Tailscale..."
-          & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-dns=false --accept-routes=true
-
-          Write-Host "🌐 Checking Tailscale status..."
-          & $tailscaleExe status
+          Write-Host "🌐 Status:"
+          & $zipPath status
 
       - name: ✅ Summary
         run: |
-          Write-Host "✅ RDP user created and Tailscale connected!"
-          Write-Host "Use your Tailscale IP to connect via RDP."
+          Write-Host "✅ All done!"
+          Write-Host "Check Tailscale admin panel — device 'GitHubRDP' should be online."
+          Write-Host "Use above credentials to RDP into its Tailscale IP."
