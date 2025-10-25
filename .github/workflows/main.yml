@@ -65,24 +65,36 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Write-Host "✅ Remote Desktop enabled & firewall rule set."
 
-      # -------------------------------------------------------
-      # 3️⃣ Install and Connect Tailscale
+      # ------------------------------------------------------
+      # 3️⃣ Install and Connect Tailscale (fixed download)
       # -------------------------------------------------------
       - name: Install and Connect to Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
+          Write-Host "📦 Downloading Tailscale MSI..."
+          $tailscaleUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tailscaleUrl -OutFile $installer
+
           Write-Host "📦 Installing Tailscale..."
-          msiexec /i https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi /qn
+          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn" -Wait -NoNewWindow
+
+          # Wait a moment to ensure service starts
+          Start-Sleep -Seconds 5
 
           Write-Host "🔗 Connecting to Tailscale..."
-          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" `
-                        -ArgumentList "up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes" `
-                        -NoNewWindow -Wait
+          $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-Not (Test-Path $tailscaleExe)) {
+            throw "Tailscale executable not found at expected path: $tailscaleExe"
+          }
+
+          & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes
 
           Write-Host "🌐 Checking Tailscale status..."
-          & "C:\Program Files\Tailscale\tailscale.exe" status
+          & $tailscaleExe status
+
 
       # -------------------------------------------------------
       # 4️⃣ Show Access Info
