@@ -1,4 +1,4 @@
-name: RDP
+name: ✅ RDP + Tailscale Setup
 
 on:
   workflow_dispatch:
@@ -6,56 +6,73 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 120
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------
+      # 1️⃣ Generate Random Credentials
+      # -------------------------------------------------------
+      - name: Create RDP user and print credentials
+        shell: pwsh
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
+          # Generate a strong random password
+          $chars = (48..57) + (65..90) + (97..122) + (33..47)
+          $pw = -join (1..16 | ForEach-Object { [char]($chars | Get-Random) })
+          $username = "rdpuser"
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 0 -Force
+          Write-Host "=== RDP CREDENTIALS ==="
+          Write-Host "USERNAME: $username"
+          Write-Host "PASSWORD: $pw"
+          Write-Host "======================="
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" -Value 0 -Force
+          # Create user (optional)
+          net user $username $pw /add
+          net localgroup "Remote Desktop Users" $username /add
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          # Save for later steps
+          echo "USERNAME=$username" >> $env:GITHUB_ENV
+          echo "PASSWORD=$pw" >> $env:GITHUB_ENV
 
-          # Allow incoming RDP connection (port 3389)
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
-          # Restart Remote Desktop service to apply changes
-          Restart-Service -Name TermService -Force
-
-      - name: Install Tailscale
+      # -------------------------------------------------------
+      # 2️⃣ Enable RDP & Firewall Rules
+      # -------------------------------------------------------
+      - name: Enable Remote Desktop
+        shell: pwsh
         run: |
-          Write-Host "Downloading and installing Tailscale..."
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "$env:TEMP\tailscale-setup.exe"
-          Start-Process "$env:TEMP\tailscale-setup.exe" -ArgumentList "/quiet" -Wait
-          $env:Path += ";C:\Program Files\Tailscale\"
-          Write-Host "Tailscale installed successfully."
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Write-Host "✅ RDP access enabled successfully!"
 
-      - name: Connect to Tailscale Network
+      # -------------------------------------------------------
+      # 3️⃣ Install and Connect Tailscale
+      # -------------------------------------------------------
+      - name: Install and Connect to Tailscale
+        shell: pwsh
         env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          Write-Host "Connecting to Tailscale network..."
-          & "C:\Program Files\Tailscale\tailscale.exe" up `
-            --authkey $env:TAILSCALE_AUTH_KEY `
-            --hostname "github-rdp" `
-            --accept-routes
-          Write-Host "Connected to Tailscale network successfully."
+          Write-Host "📦 Installing Tailscale..."
+          msiexec /i https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi /qn
 
-      - name: Show Tailscale IP
-        run: |
-          Write-Host "Fetching Tailscale IP..."
-          & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          Write-Host "🔗 Connecting to Tailscale..."
+          Start-Process -FilePath "C:\Program Files\Tailscale\tailscale.exe" -ArgumentList "up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes" -NoNewWindow -Wait
 
-      - name: Complete job
+          Write-Host "🌐 Checking Tailscale status..."
+          & "C:\Program Files\Tailscale\tailscale.exe" status
+
+      # -------------------------------------------------------
+      # 4️⃣ Show Access Info
+      # -------------------------------------------------------
+      - name: Show connection details
+        shell: pwsh
         run: |
-          Write-Host "✅ RDP + Tailscale setup completed successfully."
-          Write-Host "You can now connect to this machine via Tailscale RDP."
+          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          Write-Host "=============================="
+          Write-Host "🎯 Connect via RDP at: $ip"
+          Write-Host "👤 Username: $env:USERNAME"
+          Write-Host "🔑 Password: $env:PASSWORD"
+          Write-Host "=============================="
+          Write-Host "⚠️ Tip: Use Tailscale IP above in your RDP client."
