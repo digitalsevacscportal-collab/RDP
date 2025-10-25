@@ -1,204 +1,54 @@
-name: RDP Full Flow (8-step sequence, old-style Tailscale)
+name: ✅ Cloud RDP via Ngrok
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 120
-
     steps:
-      # -------------------------------------------------------
-      - name: 1 - Setup job (checkout + env)
-        uses: actions/checkout@v4
+    - name: 1️⃣ Setup Environment
+      run: |
+        Write-Host "Initializing environment..."
 
-      # -------------------------------------------------------
-      - name: 2 - Configure core-RDP settings
-        shell: pwsh
-        run: |
-          Write-Host "2) Configuring core RDP settings..."
-          # Ensure Terminal Services allows connections
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          # Enable firewall rules for Remote Desktop
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          # Ensure Remote Desktop Services is set to automatic (best effort)
-          try {
-            Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue
-          } catch {
-            Write-Host "Could not modify TermService startup type: $($_.Exception.Message)"
-          }
-          Write-Host "2) Core RDP configuration done."
+    - name: 2️⃣ Enable RDP and Create User
+      run: |
+        Write-Host "Creating RDP user..."
+        $username = "rdpuser"
+        $password = -join ((33..126) | Get-Random -Count 12 | % {[char]$_})
+        net user $username $password /add
+        net localgroup administrators $username /add
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1
+        Write-Host "=== RDP CREDENTIALS ==="
+        Write-Host "USERNAME: $username"
+        Write-Host "PASSWORD: $password"
+        Write-Host "======================="
 
-      # -------------------------------------------------------
-      - name: 3 - Create RDP user with secure password
-        shell: pwsh
-        run: |
-          Write-Host "3) Creating RDP user + secure password..."
-          # Generate a secure password (14 chars to avoid legacy net user prompt)
-          $chars = (48..57) + (65..90) + (97..122) + (33..47)
-          $pw = -join (1..14 | ForEach-Object { [char]($chars | Get-Random) })
-          $username = "rdpuser"
+    - name: 3️⃣ Install Ngrok
+      run: |
+        Write-Host "Downloading Ngrok..."
+        Invoke-WebRequest https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-stable-windows-amd64.zip -OutFile ngrok.zip
+        Expand-Archive ngrok.zip -DestinationPath $env:USERPROFILE\ngrok
 
-          Write-Host "=== RDP CREDENTIALS ==="
-          Write-Host "USERNAME: $username"
-          Write-Host "PASSWORD: $pw"
-          Write-Host "======================="
+    - name: 4️⃣ Connect Ngrok Tunnel (RDP 3389)
+      env:
+        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+      run: |
+        Write-Host "Starting Ngrok tunnel..."
+        $env:PATH += ";$env:USERPROFILE\ngrok"
+        Start-Process "$env:USERPROFILE\ngrok\ngrok.exe" "authtoken $env:NGROK_AUTH_TOKEN" -NoNewWindow -Wait
+        Start-Process "$env:USERPROFILE\ngrok\ngrok.exe" "tcp 3389" -NoNewWindow
+        Start-Sleep -Seconds 10
+        $tunnel = (Invoke-WebRequest -Uri "http://127.0.0.1:4040/api/tunnels").Content | ConvertFrom-Json
+        $publicUrl = $tunnel.tunnels.public_url
+        Write-Host "🌐 Your RDP Address (via Ngrok): $publicUrl"
 
-          # Export to environment for later steps
-          echo "USERNAME=$username" >> $env:GITHUB_ENV
-          echo "PASSWORD=$pw" >> $env:GITHUB_ENV
-
-          # Create user safely: prefer New-LocalUser; fallback to net user
-          try {
-            if (Get-Command New-LocalUser -ErrorAction SilentlyContinue) {
-              $securePw = ConvertTo-SecureString $pw -AsPlainText -Force
-              if (-Not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
-                New-LocalUser -Name $username -Password $securePw -FullName "RDP User" -Description "Created by GitHub Actions" -PasswordNeverExpires:$true
-                Write-Host "Created local user via New-LocalUser."
-              } else {
-                Set-LocalUser -Name $username -Password $securePw
-                Write-Host "User existed; password reset via PowerShell."
-              }
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction Stop
-            } else {
-              throw "New-LocalUser not available"
-            }
-          } catch {
-            Write-Host "Falling back to net user method (may prompt if password >14): $($_.Exception.Message)"
-            cmd /c "echo Y | net user $username $pw /add"
-            cmd /c "net localgroup \"Remote Desktop Users\" $username /add"
-          }
-
-          Write-Host "3) RDP user step complete."
-
-      # -------------------------------------------------------
-      - name: 4 - Install Tailscale (old-style MSI installer)
-        shell: pwsh
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
-        run: |
-          Write-Host "4) Installing Tailscale (old-style MSI)."
-          Write-Host "⚠️ Warning: on GitHub-hosted Windows runners MSI installs or service installs may be blocked by the sandbox. This step may fail."
-          $msiUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
-          $installer = "$env:TEMP\tailscale-setup.msi"
-
-          try {
-            # Attempt to download MSI
-            Invoke-WebRequest -Uri $msiUrl -OutFile $installer -UseBasicParsing -ErrorAction Stop
-            if (-Not (Test-Path $installer)) { throw "Downloader did not produce installer." }
-            Write-Host "MSI downloaded to $installer"
-            # Try to install (may fail on hosted runners)
-            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn /norestart" -Wait -NoNewWindow
-            Write-Host "Attempted MSI install. If this succeeded, tailscale.exe should be in Program Files."
-          } catch {
-            Write-Host "4) Tailscale install/download failed or not allowed: $($_.Exception.Message)"
-            Write-Host "4) Continuing — subsequent connection step may fail if Tailscale is not present."
-          }
-
-      # -------------------------------------------------------
-      - name: 5 - Establish Tailscale connection
-        shell: pwsh
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
-        run: |
-          Write-Host "5) Establishing Tailscale connection (old-style expected path)..."
-          $exePath = "C:\Program Files\Tailscale\tailscale.exe"
-
-          if (-Not (Test-Path $exePath)) {
-            Write-Host "5) tailscale.exe not found at $exePath. Attempting to locate any tailscale.exe on system..."
-            $found = Get-ChildItem -Path C:\ -Filter tailscale.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-              $exePath = $found.FullName
-              Write-Host "Found tailscale.exe at $exePath"
-            } else {
-              Write-Host "5) No tailscale executable found. Tailscale connection cannot be established on this runner."
-              exit 0
-            }
-          }
-
-          Write-Host "Running: $exePath up --authkey <redacted> --hostname GitHubRDP --accept-routes"
-          & $exePath up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes --accept-dns=false
-          Write-Host "5) Tailscale 'up' attempted. Status follows (if available):"
-          & $exePath status || Write-Host "Unable to query status."
-
-      # -------------------------------------------------------
-      - name: 6 - Verify RDP accessibility
-        shell: pwsh
-        run: |
-          Write-Host "6) Verifying RDP accessibility..."
-          # Check local RDP port
-          $portTest = Test-NetConnection -ComputerName localhost -Port 3389 -InformationLevel Detailed
-          if ($portTest.TcpTestSucceeded) {
-            Write-Host "Local RDP port 3389 is listening (local connectivity OK)."
-          } else {
-            Write-Host "Local RDP port 3389 not reachable on this runner: $($portTest)"
-          }
-
-          # If Tailscale is present, attempt to get Tailscale IP and test it
-          $exeCandidates = Get-ChildItem -Path C:\ -Filter tailscale.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($exeCandidates) {
-            $exe = $exeCandidates.FullName
-            try {
-              $tsIp = & $exe ip -4 2>$null
-              if ($tsIp) {
-                Write-Host "Tailscale IP: $tsIp"
-                $tsTest = Test-NetConnection -ComputerName $tsIp -Port 3389 -InformationLevel Detailed
-                if ($tsTest.TcpTestSucceeded) {
-                  Write-Host "RDP reachable via Tailscale IP (connectivity OK)."
-                } else {
-                  Write-Host "RDP not reachable via Tailscale IP: $($tsTest)"
-                }
-              } else {
-                Write-Host "Could not fetch Tailscale IP (maybe not connected)."
-              }
-            } catch {
-              Write-Host "Error while testing Tailscale IP: $($_.Exception.Message)"
-            }
-          } else {
-            Write-Host "Tailscale not found; skipping remote/RFC1918 checks."
-          }
-
-      # -------------------------------------------------------
-      - name: 7 - Maintain connection (keepalive/check loop)
-        shell: pwsh
-        run: |
-          Write-Host "7) Maintaining connection: running a brief keepalive check loop (non-blocking)..."
-          # This step runs a short loop to check RDP and, if tailscale present, tailscale status.
-          for ($i=0; $i -lt 6; $i++) {
-            Write-Host "Keepalive check #$($i+1) - $(Get-Date -Format o)"
-            # local rdp check
-            $local = Test-NetConnection -ComputerName localhost -Port 3389 -InformationLevel Quiet
-            if ($local) { Write-Host "  - Local RDP OK" } else { Write-Host "  - Local RDP NOT OK" }
-            # tailscale status if present
-            $exe = Get-ChildItem -Path C:\ -Filter tailscale.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($exe) {
-              try {
-                $status = & $exe.FullName status 2>$null
-                Write-Host "  - Tailscale status snippet:"
-                $status | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" }
-              } catch {
-                Write-Host "  - Tailscale status check failed."
-              }
-            } else {
-              Write-Host "  - No tailscale binary found."
-            }
-            Start-Sleep -Seconds 10
-          }
-          Write-Host "7) Maintain/check loop complete."
-
-      # -------------------------------------------------------
-      - name: 8 - Complete job (summary + cleanup hints)
-        shell: pwsh
-        run: |
-          Write-Host "8) Job complete. Summary:"
-          Write-Host "   - RDP user: $env:USERNAME"
-          Write-Host "   - (Password printed earlier in step 3)"
-          Write-Host "   - If Tailscale installed & connected, device hostname: GitHubRDP"
-          Write-Host ""
-          Write-Host "Notes:"
-          Write-Host " - If you are using GitHub-hosted runners, old-style MSI installs (Tailscale) often fail due to sandbox restrictions."
-          Write-Host " - For a reliable Tailscale + RDP workflow, run this job on a self-hosted Windows runner with Tailscale preinstalled and connected (use runs-on: self-hosted)."
-          Write-Host ""
-          Write-Host "Cleanup hint (optional): remove user after testing:"
-          Write-Host "  net user $env:USERNAME /delete || Remove-LocalUser -Name $env:USERNAME -ErrorAction SilentlyContinue"
+    - name: 5️⃣ Keep Alive (Prevent job timeout)
+      run: |
+        Write-Host "Maintaining RDP session..."
+        for ($i=0; $i -lt 360; $i++) {
+          Write-Host "RDP active for $i minutes..."
+          Start-Sleep -Seconds 60
+        }
