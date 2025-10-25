@@ -1,4 +1,4 @@
-name: ✅ RDP + Tailscale Setup (v3 Final)
+name: ✅ RDP + Tailscale (Portable Fix)
 
 on:
   workflow_dispatch:
@@ -6,110 +6,50 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 120
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # -------------------------------------------------------
-      # 1️⃣ Generate Random Credentials & Create User
-      # -------------------------------------------------------
-      - name: Create RDP user and print credentials
+      - name: 🧱 Setup RDP User
         shell: pwsh
         run: |
-          # Generate strong random password (16 chars)
-          $chars = (48..57) + (65..90) + (97..122) + (33..47)
-          $pw = -join (1..16 | ForEach-Object { [char]($chars | Get-Random) })
+          Write-Host "👤 Creating RDP user..."
+          $chars = (48..57)+(65..90)+(97..122)+(33..47)
+          $pw = -join (1..14 | ForEach-Object {[char]($chars | Get-Random)})  # <= Max 14 chars to avoid NTLM issue
           $username = "rdpuser"
-
           Write-Host "=== RDP CREDENTIALS ==="
           Write-Host "USERNAME: $username"
           Write-Host "PASSWORD: $pw"
           Write-Host "======================="
-
-          # Save credentials for later steps
-          echo "USERNAME=$username" >> $env:GITHUB_ENV
-          echo "PASSWORD=$pw" >> $env:GITHUB_ENV
-
-          # Create user safely (non-interactive)
+          $securePw = ConvertTo-SecureString $pw -AsPlainText -Force
           try {
-            if (Get-Command New-LocalUser -ErrorAction SilentlyContinue) {
-              $securePw = ConvertTo-SecureString $pw -AsPlainText -Force
-              if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
-                Write-Host "User exists, resetting password..."
-                Set-LocalUser -Name $username -Password $securePw
-              } else {
-                New-LocalUser -Name $username -Password $securePw -FullName "RDP User" -Description "Created by GitHub Actions" -PasswordNeverExpires:$true
-              }
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction Stop
-              Write-Host "✅ Local user created via PowerShell (New-LocalUser)."
-            } else {
-              throw "New-LocalUser unavailable"
-            }
+            net user $username $pw /add
           } catch {
-            Write-Host "⚠️ New-LocalUser failed: $($_.Exception.Message)"
-            Write-Host "Fallback to net user (auto-confirm legacy prompt)"
-            cmd /c "echo Y | net user $username $pw /add"
-            cmd /c "net localgroup \"Remote Desktop Users\" $username /add"
-            Write-Host "✅ Fallback user creation done."
+            Write-Host "User already exists, updating password..."
+            net user $username $pw
           }
-
-      # -------------------------------------------------------
-      # 2️⃣ Enable RDP + Firewall Rules
-      # -------------------------------------------------------
-      - name: Enable Remote Desktop
-        shell: pwsh
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          net localgroup "Remote Desktop Users" $username /add
+          reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Write-Host "✅ Remote Desktop enabled & firewall rule set."
 
-      # -------------------------------------------------------
-      # 3️⃣ Install and Connect Tailscale (Fixed local MSI install)
-      # -------------------------------------------------------
-      - name: Install and Connect to Tailscale
+      - name: 🌐 Download and Connect to Tailscale (Portable)
         shell: pwsh
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          Write-Host "📦 Downloading Tailscale MSI..."
-          $tailscaleUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi"
-          $installer = "$env:TEMP\tailscale.msi"
+          Write-Host "📦 Downloading Tailscale Portable..."
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-ipn-setup.exe" -OutFile "$env:TEMP\tailscale.exe" -UseBasicParsing
 
-          # Download to temp path
-          Invoke-WebRequest -Uri $tailscaleUrl -OutFile $installer -UseBasicParsing
-          if (-Not (Test-Path $installer)) {
-            throw "Tailscale installer not downloaded properly!"
-          }
-
-          Write-Host "📦 Installing Tailscale..."
-          Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$installer`" /qn" -Wait -NoNewWindow
-
-          Write-Host "⏳ Waiting for Tailscale service to initialize..."
-          Start-Sleep -Seconds 5
-
-          $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+          $tailscaleExe = "$env:TEMP\tailscale.exe"
           if (-Not (Test-Path $tailscaleExe)) {
-            throw "❌ tailscale.exe not found! Installation failed."
+            throw "❌ Failed to download Tailscale portable client!"
           }
 
           Write-Host "🔗 Connecting to Tailscale..."
-          & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-routes
+          & $tailscaleExe up --authkey $env:TAILSCALE_AUTHKEY --hostname GitHubRDP --accept-dns=false --accept-routes=true
 
           Write-Host "🌐 Checking Tailscale status..."
           & $tailscaleExe status
 
-      # -------------------------------------------------------
-      # 4️⃣ Show Access Info
-      # -------------------------------------------------------
-      - name: Show connection details
-        shell: pwsh
+      - name: ✅ Summary
         run: |
-          $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-          Write-Host "=============================="
-          Write-Host "🎯 Connect via RDP at: $ip"
-          Write-Host "👤 Username: $env:USERNAME"
-          Write-Host "🔑 Password: $env:PASSWORD"
-          Write-Host "=============================="
-          Write-Host "⚠️ Use the Tailscale IP above in your RDP client."
+          Write-Host "✅ RDP user created and Tailscale connected!"
+          Write-Host "Use your Tailscale IP to connect via RDP."
